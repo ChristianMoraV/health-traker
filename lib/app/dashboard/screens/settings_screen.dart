@@ -1,15 +1,19 @@
 import 'package:flutter/material.dart';
 import '../../../components/cards/info_card.dart';
 import '../../../components/buttons/primary_button.dart';
+import '../../../components/dialogs/api_config_dialog.dart';
 import '../../../utils/colors.dart';
 import '../../../utils/constants.dart';
 import '../../../models/user.dart';
+import '../../../services/metrics_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   final User user;
   final VoidCallback onBack;
   final VoidCallback onLogout;
   final Function(User) onUserUpdate;
+  final VoidCallback onNavigateToUpdatePhysical;
+  final VoidCallback onNavigateToChangeObjective;
 
   const SettingsScreen({
     super.key,
@@ -17,6 +21,8 @@ class SettingsScreen extends StatefulWidget {
     required this.onBack,
     required this.onLogout,
     required this.onUserUpdate,
+    required this.onNavigateToUpdatePhysical,
+    required this.onNavigateToChangeObjective,
   });
 
   @override
@@ -28,10 +34,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _biometricEnabled = false;
   bool _darkModeEnabled = false;
   
+  // Variables para métricas actuales
+  double? _currentWeight;
+  double? _currentIMC;
+  bool _isLoadingMetrics = true;
+  
+  // Método para mostrar configuración de API
+  Future<void> _showApiConfigDialog() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => const ApiConfigDialog(),
+    );
+    
+    if (result == true) {
+      // La configuración se actualizó exitosamente
+    }
+  }
+  
   // TODO: Aquí puedes agregar tu lógica de configuración con IA
   // - Personalización automática basada en patrones de uso
   // - Ajustes inteligentes de notificaciones
   // - Optimización de la experiencia del usuario usando ML
+  
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentMetrics();
+  }
+  
+  Future<void> _loadCurrentMetrics() async {
+    if (widget.user.id == null) return;
+    
+    try {
+      final latestMetric = await MetricsService.getLatestMetric(widget.user.id!);
+      final currentWeight = latestMetric?.peso ?? widget.user.weight;
+      final currentIMC = widget.user.height > 0 
+          ? currentWeight / ((widget.user.height / 100) * (widget.user.height / 100))
+          : widget.user.bmi;
+          
+      setState(() {
+        _currentWeight = currentWeight;
+        _currentIMC = currentIMC;
+        _isLoadingMetrics = false;
+      });
+    } catch (e) {
+      // En caso de error, usar datos del usuario
+      setState(() {
+        _currentWeight = widget.user.weight;
+        _currentIMC = widget.user.bmi;
+        _isLoadingMetrics = false;
+      });
+    }
+  }
   
   @override
   Widget build(BuildContext context) {
@@ -188,13 +242,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: _buildProfileStat('Edad', '${widget.user.age} años'),
               ),
               Expanded(
-                child: _buildProfileStat('Altura', '${widget.user.height} cm'),
+                child: _buildProfileStat('Altura', '${widget.user.height.toInt()} cm'),
               ),
               Expanded(
-                child: _buildProfileStat('Peso', '${widget.user.weight} kg'),
+                child: _isLoadingMetrics 
+                    ? _buildProfileStat('Peso', '...')
+                    : _buildProfileStat('Peso', '${_currentWeight?.toStringAsFixed(1) ?? widget.user.weight.toStringAsFixed(1)} kg'),
               ),
               Expanded(
-                child: _buildProfileStat('IMC', widget.user.bmi.toStringAsFixed(1)),
+                child: _isLoadingMetrics 
+                    ? _buildProfileStat('IMC', '...')
+                    : _buildProfileStat('IMC', _currentIMC?.toStringAsFixed(1) ?? widget.user.bmi.toStringAsFixed(1)),
               ),
             ],
           ),
@@ -235,18 +293,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'Actualizar Datos Físicos',
             'Peso, altura, nivel de actividad',
             Icons.scale,
-            () {
-              // TODO: Navegar a actualización de datos físicos
-            },
-          ),
-          const Divider(),
-          _buildSettingsTile(
-            'Cambiar Objetivo',
-            'Volumen, definición o mantenimiento',
-            Icons.flag,
-            () {
-              // TODO: Navegar a cambio de objetivo
-            },
+            widget.onNavigateToUpdatePhysical,
           ),
           const Divider(),
           _buildSettingsTile(
@@ -305,6 +352,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               });
               // TODO: Cambiar tema de la app
             },
+          ),
+          const Divider(),
+          _buildActionTile(
+            'Configurar API',
+            'Cambiar servidor de la aplicación',
+            Icons.api,
+            _showApiConfigDialog,
           ),
         ],
       ),
@@ -593,6 +647,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildActionTile(
+    String title,
+    String subtitle,
+    IconData icon,
+    VoidCallback onTap,
+  ) {
+    return ListTile(
+      leading: Icon(
+        icon,
+        color: AppColors.primaryBlue,
+        size: 20,
+      ),
+      title: Text(
+        title,
+        style: const TextStyle(
+          fontWeight: FontWeight.w500,
+          color: AppColors.textPrimary,
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: const TextStyle(
+          color: AppColors.textSecondary,
+          fontSize: 12,
+        ),
+      ),
+      trailing: const Icon(
+        Icons.arrow_forward_ios,
+        color: AppColors.textSecondary,
+        size: 16,
+      ),
+      onTap: onTap,
     );
   }
 }

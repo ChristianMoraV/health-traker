@@ -5,6 +5,7 @@ import '../../../utils/constants.dart';
 import '../../../models/user.dart';
 import '../../../models/health_estimation.dart';
 import '../../../services/health_calculator_service.dart';
+import '../../../services/prediction_service.dart';
 
 class EstimationScreen extends StatefulWidget {
   final User user;
@@ -25,6 +26,7 @@ class _EstimationScreenState extends State<EstimationScreen>
   late TabController _tabController;
   HealthEstimation? _estimation;
   bool _isCalculating = true;
+  int _selectedDays = 30; // Días para la predicción
 
   @override
   void initState() {
@@ -44,19 +46,113 @@ class _EstimationScreenState extends State<EstimationScreen>
       _isCalculating = true;
     });
 
-    // TODO: Aquí puedes integrar tu modelo de IA/ML para estimaciones más precisas
-    // Ejemplo: await AIEstimationService.calculateAdvancedMetrics(widget.user);
-    // - Análisis de composición corporal con IA
-    // - Predicciones basadas en datos históricos similares
-    // - Ajustes personalizados según patrones de comportamiento
-    await Future.delayed(const Duration(seconds: 2));
+    try {
+      // Verificar que el usuario tenga ID
+      if (widget.user.id == null) {
+        throw Exception('Usuario sin ID válido');
+      }
 
-    final estimation = HealthCalculatorService.calculateEstimation(widget.user);
-    
-    setState(() {
-      _estimation = estimation;
-      _isCalculating = false;
-    });
+      // Usar PredictionService para obtener predicción con IA real
+      final predictions = await PredictionService.predictWeight(widget.user.id!, days: _selectedDays);
+      
+      // Calcular métricas básicas manualmente
+      final currentWeight = predictions['peso_actual']?.toDouble() ?? widget.user.weight;
+      final predictedWeight = predictions['peso_predicho']?.toDouble() ?? widget.user.weight;
+      final weightChange = predictions['cambio_estimado']?.toDouble() ?? 0.0;
+      
+      // Calcular TMB (Tasa Metabólica Basal) usando fórmula de Harris-Benedict
+      final tmb = widget.user.gender == 'Masculino' 
+          ? (88.362 + (13.397 * currentWeight) + (4.799 * widget.user.height) - (5.677 * widget.user.age))
+          : (447.593 + (9.247 * currentWeight) + (3.098 * widget.user.height) - (4.330 * widget.user.age));
+      
+      // Calcular TDEE basado en nivel de actividad
+      double activityMultiplier = 1.2; // Sedentario por defecto
+      switch (widget.user.activityLevel) {
+        case 'Bajo':
+          activityMultiplier = 1.375;
+          break;
+        case 'Moderado':
+          activityMultiplier = 1.55;
+          break;
+        case 'Alto':
+          activityMultiplier = 1.725;
+          break;
+        case 'Muy Alto':
+          activityMultiplier = 1.9;
+          break;
+      }
+      final tdee = tmb * activityMultiplier;
+      
+      // Calcular calorías objetivo basado en objetivo
+      double targetCalories = tdee;
+      switch (widget.user.objective) {
+        case 'perder_peso':
+          targetCalories = tdee - 500; // Déficit de 500 cal
+          break;
+        case 'ganar_peso':
+        case 'ganar_musculo':
+          targetCalories = tdee + 300; // Superávit de 300 cal
+          break;
+        case 'mantener_peso':
+        default:
+          targetCalories = tdee;
+          break;
+      }
+      
+      // Macronutrientes basados en calorías objetivo
+      final macros = Macronutrients(
+        protein: currentWeight * 2.2, // 2.2g por kg de peso
+        fat: targetCalories * 0.25 / 9, // 25% de calorías de grasa
+        carbs: (targetCalories - (currentWeight * 2.2 * 4) - (targetCalories * 0.25)) / 4,
+      );
+      
+      // Progreso semanal simulado basado en predicción
+      final weeklyProgress = List<WeeklyProgress>.generate(4, (index) {
+        final progressWeight = currentWeight + (weightChange * (index + 1) / 4);
+        return WeeklyProgress(
+          week: index + 1,
+          weight: progressWeight,
+          progress: ((progressWeight - currentWeight) / weightChange * 100).clamp(0, 100),
+        );
+      });
+      
+      // Crear estimación
+      final estimation = HealthEstimation(
+        tmb: tmb,
+        tdee: tdee,
+        targetCalories: targetCalories,
+        expectedWeightChange: weightChange,
+        timeToGoal: 4, // 4 semanas basado en predicción de 30 días
+        targetWeight: predictedWeight,
+        macros: macros,
+        weeklyProgress: weeklyProgress,
+        objective: widget.user.objective,
+      );
+      
+      setState(() {
+        _estimation = estimation;
+        _isCalculating = false;
+      });
+    } catch (e) {
+      print('Error al obtener predicción IA: $e');
+      
+      // Fallback: usar cálculo local si falla la IA
+      try {
+        await Future.delayed(const Duration(seconds: 1));
+        final estimation = HealthCalculatorService.calculateEstimation(widget.user);
+        
+        setState(() {
+          _estimation = estimation;
+          _isCalculating = false;
+        });
+      } catch (fallbackError) {
+        print('Error en cálculo fallback: $fallbackError');
+        setState(() {
+          _estimation = null;
+          _isCalculating = false;
+        });
+      }
+    }
   }
 
   @override
@@ -169,24 +265,76 @@ class _EstimationScreenState extends State<EstimationScreen>
   Widget _buildHeader() {
     return Padding(
       padding: const EdgeInsets.all(AppConstants.defaultPadding),
-      child: Row(
+      child: Column(
         children: [
-          IconButton(
-            onPressed: widget.onBack,
-            icon: const Icon(
-              Icons.arrow_back,
-              color: AppColors.textPrimary,
-            ),
-          ),
-          const SizedBox(width: 8),
-          const Expanded(
-            child: Text(
-              'Estimación Personalizada',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary,
+          Row(
+            children: [
+              IconButton(
+                onPressed: widget.onBack,
+                icon: const Icon(
+                  Icons.arrow_back,
+                  color: AppColors.textPrimary,
+                ),
               ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Estimación Personalizada',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          // Selector de días para predicción
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppConstants.defaultBorderRadius),
+              border: Border.all(color: AppColors.borderColor),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.schedule, color: AppColors.textSecondary, size: 20),
+                const SizedBox(width: 8),
+                const Text(
+                  'Predicción a:',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<int>(
+                      value: _selectedDays,
+                      isExpanded: true,
+                      items: const [
+                        DropdownMenuItem(value: 7, child: Text('1 semana')),
+                        DropdownMenuItem(value: 14, child: Text('2 semanas')),
+                        DropdownMenuItem(value: 30, child: Text('1 mes')),
+                        DropdownMenuItem(value: 60, child: Text('2 meses')),
+                        DropdownMenuItem(value: 90, child: Text('3 meses')),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() {
+                            _selectedDays = value;
+                          });
+                          _calculateEstimation(); // Recalcular con nuevos días
+                        }
+                      },
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],

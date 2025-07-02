@@ -1,19 +1,26 @@
 import 'package:flutter/material.dart';
 import '../../../components/cards/info_card.dart';
-import '../../../components/buttons/primary_button.dart';
 import '../../../utils/colors.dart';
 import '../../../utils/constants.dart';
 import '../../../models/user.dart';
+import '../../../services/metrics_service.dart';
+import '../../../services/prediction_service.dart';
 
-class HomeScreen extends StatefulWidget {  final User user;
+class HomeScreen extends StatefulWidget {
+  final User user;
   final VoidCallback onNavigateToEstimation;
   final VoidCallback onNavigateToSettings;
+  final VoidCallback onNavigateToAddMetrics;
+  final VoidCallback? onNavigateToCorporalMetrics;
   final VoidCallback onLogout;
+  
   const HomeScreen({
     super.key,
     required this.user,
     required this.onNavigateToEstimation,
     required this.onNavigateToSettings,
+    required this.onNavigateToAddMetrics,
+    this.onNavigateToCorporalMetrics,
     required this.onLogout,
   });
 
@@ -40,27 +47,107 @@ class _HomeScreenState extends State<HomeScreen> {
       _isLoadingMetrics = true;
     });
 
-    // TODO: Aquí puedes integrar tu API/servicio de IA
-    // Ejemplo: await AIHealthService.analyzeUserData(widget.user);
-    await Future.delayed(const Duration(seconds: 1));
+    try {
+      // Verificar que el usuario tenga ID
+      if (widget.user.id == null) {
+        throw Exception('Usuario sin ID válido');
+      }
 
-    // Datos simulados - reemplazar con datos reales de IA
-    setState(() {
-      _healthMetrics = {
-        'currentIMC': widget.user.bmi,
-        'imcStatus': _getIMCStatus(widget.user.bmi),
-        'weeklyProgress': 0.3, // kg ganados/perdidos esta semana
-        'goalProgress': 65.0, // % de progreso hacia el objetivo
-        'recommendedCalories': 2500,
-        'waterIntake': 2.1, // litros
-        'sleepHours': 7.5,
-        'workoutsThisWeek': 4,
-        // TODO: Agregar métricas calculadas por IA
-        'aiPredictedGoalDate': '2025-09-15',
-        'aiConfidenceScore': 87.5,
-      };
-      _isLoadingMetrics = false;
-    });
+      final userId = widget.user.id!;
+      print('🔍 Cargando métricas para usuario: $userId');
+
+      // Cargar métricas del usuario desde el backend
+      final latestMetric = await MetricsService.getLatestMetric(userId);
+      print('📊 Última métrica: ${latestMetric?.peso ?? 'null'}');
+      
+      final recentMetrics = await MetricsService.getMetricsInRange(userId, 30);
+      print('📈 Métricas recientes: ${recentMetrics.length} registros');
+      
+      // Calcular progreso si hay métricas
+      Map<String, dynamic> progress = {};
+      if (recentMetrics.isNotEmpty) {
+        progress = MetricsService.calculateWeightProgress(recentMetrics);
+      }
+
+      // Obtener predicciones de IA si hay datos suficientes
+      Map<String, dynamic>? predictions;
+      List<Map<String, dynamic>>? recommendations;
+      
+      if (recentMetrics.length >= 2) {
+        // Obtener predicciones
+        try {
+          predictions = await PredictionService.predictWeight(userId, days: 30);
+        } catch (e) {
+          print('Error obteniendo predicciones: $e');
+        }
+        
+        // Obtener recomendaciones por separado
+        try {
+          recommendations = await PredictionService.getRecommendations(userId);
+        } catch (e) {
+          print('Error obteniendo recomendaciones: $e');
+          recommendations = []; // Lista vacía en caso de error
+        }
+      }
+
+      // Calcular IMC actual basado en el peso más reciente
+      double currentWeight = latestMetric?.peso ?? widget.user.weight;
+      double currentIMC = widget.user.height > 0 
+          ? currentWeight / ((widget.user.height / 100) * (widget.user.height / 100))
+          : widget.user.bmi;
+      
+      print('🔍 Debug info:');
+      print('  - latestMetric peso: ${latestMetric?.peso}');
+      print('  - widget.user.weight: ${widget.user.weight}');
+      print('  - widget.user.height: ${widget.user.height}');
+      print('⚖️ Peso actual calculado: $currentWeight kg');
+      print('📏 IMC calculado: $currentIMC');
+      print('🤖 Predicciones: ${predictions != null ? 'Disponibles' : 'No disponibles'}');
+      print('💡 Recomendaciones: ${recommendations?.length ?? 0} items');
+
+      setState(() {
+        _healthMetrics = {
+          'currentWeight': currentWeight,
+          'currentIMC': currentIMC,
+          'imcStatus': _getIMCStatus(currentIMC),
+          'weeklyProgress': progress['weeklyAverage'] ?? 0.0,
+          'totalChange': progress['totalChange'] ?? 0.0,
+          'trend': progress['trend'] ?? 'estable',
+          'hasMetrics': recentMetrics.isNotEmpty,
+          'metricsCount': recentMetrics.length,
+          'lastMetricDate': latestMetric?.fecha,
+          // Predicciones de IA
+          'aiPredictedWeight': predictions?['peso_predicho'],
+          'aiPredictedChange': predictions?['cambio_estimado'],
+          'aiConfidence': predictions?['confianza'],
+          'aiTrend': predictions?['tendencia'],
+          // Recomendaciones
+          'recommendations': recommendations ?? [],
+          'hasRecommendations': recommendations?.isNotEmpty == true,
+        };
+        _isLoadingMetrics = false;
+        print('🎯 _healthMetrics actualizado - Peso: ${_healthMetrics!['currentWeight']} kg, IMC: ${_healthMetrics!['currentIMC']}');
+      });
+    } catch (e) {
+      print('Error cargando métricas: $e');
+      // En caso de error, usar datos básicos del usuario
+      if (mounted) {
+        setState(() {
+          _healthMetrics = {
+            'currentWeight': widget.user.weight,
+            'currentIMC': widget.user.bmi,
+            'imcStatus': _getIMCStatus(widget.user.bmi),
+            'weeklyProgress': 0.0,
+            'totalChange': 0.0,
+            'trend': 'estable',
+            'hasMetrics': false,
+            'metricsCount': 0,
+            'error': 'No se pudieron cargar las métricas',
+          };
+          _isLoadingMetrics = false;
+        });
+      }
+    }
   }
 
   String _getIMCStatus(double imc) {
@@ -210,30 +297,28 @@ class _HomeScreenState extends State<HomeScreen> {
           childAspectRatio: 1.2,
           children: [
             _buildActionCard(
-              'Calcular IMC',
-              'Analiza tu índice de masa corporal',
-              Icons.calculate,
+              'Registrar Peso',
+              'Registra tu peso actual',
+              Icons.monitor_weight,
               AppColors.primaryBlue,
-              () {
-                // TODO: Navegar a calculadora de IMC
+              widget.onNavigateToAddMetrics,
+            ),
+            _buildActionCard(
+              'Métricas Corporales',
+              'Registra métricas completas',
+              Icons.health_and_safety,
+              AppColors.primaryGreen,
+              widget.onNavigateToCorporalMetrics ?? () {
+                // TODO: Implement navigation
               },
             ),
             _buildActionCard(
               'Mi Progreso',
               'Seguimiento de tu evolución',
               Icons.trending_up,
-              AppColors.primaryGreen,
+              AppColors.success,
               () {
                 // TODO: Navegar a progreso
-              },
-            ),
-            _buildActionCard(
-              'Objetivos',
-              'Define tus metas de salud',
-              Icons.flag,
-              AppColors.primaryBlue,
-              () {
-                // TODO: Navegar a objetivos
               },
             ),
             _buildActionCard(
@@ -336,19 +421,57 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Expanded(
                 child: MetricCard(
-                  value: '${_healthMetrics!['currentIMC'].toStringAsFixed(1)}',
-                  label: 'IMC Actual',
-                  valueColor: _getIMCColor(_healthMetrics!['currentIMC']),
-                  backgroundColor: _getIMCColor(_healthMetrics!['currentIMC']).withOpacity(0.1),
+                  value: '${(_healthMetrics!['currentWeight'] as double).toStringAsFixed(1)}',
+                  label: 'Peso Actual',
+                  unit: 'kg',
+                  valueColor: AppColors.primaryBlue,
+                  backgroundColor: AppColors.primaryBlue.withOpacity(0.1),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: MetricCard(
-                  value: _healthMetrics!['imcStatus'],
-                  label: 'Estado',
+                  value: '${_healthMetrics!['currentIMC'].toStringAsFixed(1)}',
+                  label: 'IMC',
                   valueColor: _getIMCColor(_healthMetrics!['currentIMC']),
                   backgroundColor: _getIMCColor(_healthMetrics!['currentIMC']).withOpacity(0.1),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _getIMCColor(_healthMetrics!['currentIMC']).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _getIMCColor(_healthMetrics!['currentIMC']).withOpacity(0.3),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.favorite,
+                        color: _getIMCColor(_healthMetrics!['currentIMC']),
+                        size: 16,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _healthMetrics!['imcStatus'],
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: _getIMCColor(_healthMetrics!['currentIMC']),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -403,53 +526,155 @@ class _HomeScreenState extends State<HomeScreen> {
       return const SizedBox(height: 100, child: Center(child: CircularProgressIndicator()));
     }
 
+    final hasMetrics = _healthMetrics!['hasMetrics'] ?? false;
+    final weeklyProgress = (_healthMetrics!['weeklyProgress'] ?? 0.0) as double;
+    final totalChange = (_healthMetrics!['totalChange'] ?? 0.0) as double;
+    final trend = _healthMetrics!['trend'] ?? 'estable';
+    final metricsCount = _healthMetrics!['metricsCount'] ?? 0;
+
     return InfoCard(
-      title: 'Esta Semana',
+      title: hasMetrics ? 'Progreso Reciente' : 'Sin Métricas',
       icon: const Icon(Icons.calendar_today, color: AppColors.primaryGreen, size: 20),
       child: Column(
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: MetricCard(
-                  value: _healthMetrics!['weeklyProgress'] > 0 
-                      ? '+${_healthMetrics!['weeklyProgress']}' 
-                      : '${_healthMetrics!['weeklyProgress']}',
-                  label: 'kg esta semana',
-                  unit: '',
-                  valueColor: _healthMetrics!['weeklyProgress'] > 0 
-                      ? AppColors.success 
-                      : AppColors.primaryBlue,
-                  backgroundColor: (_healthMetrics!['weeklyProgress'] > 0 
-                      ? AppColors.success 
-                      : AppColors.primaryBlue).withOpacity(0.1),
+          if (hasMetrics) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: MetricCard(
+                    value: weeklyProgress >= 0 
+                        ? '+${weeklyProgress.toStringAsFixed(1)}' 
+                        : weeklyProgress.toStringAsFixed(1),
+                    label: 'kg/semana promedio',
+                    unit: '',
+                    valueColor: weeklyProgress > 0.1 
+                        ? AppColors.success 
+                        : weeklyProgress < -0.1 
+                            ? AppColors.warning
+                            : AppColors.primaryBlue,
+                    backgroundColor: (weeklyProgress > 0.1 
+                        ? AppColors.success 
+                        : weeklyProgress < -0.1 
+                            ? AppColors.warning
+                            : AppColors.primaryBlue).withOpacity(0.1),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: MetricCard(
+                    value: totalChange >= 0 
+                        ? '+${totalChange.toStringAsFixed(1)}' 
+                        : totalChange.toStringAsFixed(1),
+                    label: 'cambio total',
+                    unit: 'kg',
+                    valueColor: totalChange > 0 
+                        ? AppColors.success 
+                        : totalChange < 0 
+                            ? AppColors.warning
+                            : AppColors.primaryBlue,
+                    backgroundColor: (totalChange > 0 
+                        ? AppColors.success 
+                        : totalChange < 0 
+                            ? AppColors.warning
+                            : AppColors.primaryBlue).withOpacity(0.1),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceVariant,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Tendencia',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      Text(
+                        trend == 'subiendo' ? '📈 Subiendo' : 
+                        trend == 'bajando' ? '📉 Bajando' : '➡️ Estable',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      const Text(
+                        'Registros',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      Text(
+                        '$metricsCount',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: AppColors.warning.withOpacity(0.3),
+                  width: 1,
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: MetricCard(
-                  value: '${_healthMetrics!['workoutsThisWeek']}',
-                  label: 'entrenamientos',
-                  valueColor: AppColors.primaryGreen,
-                  backgroundColor: AppColors.primaryGreen.withOpacity(0.1),
-                ),
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.scale_outlined,
+                    size: 48,
+                    color: AppColors.warning,
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'No hay métricas registradas',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Registra tu peso para ver tu progreso',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textSecondary,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
               ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          ProgressCard(
-            title: 'Objetivo Calórico',
-            progress: 85.0,
-            subtitle: '${(_healthMetrics!['recommendedCalories'] * 0.85).toInt()}/${_healthMetrics!['recommendedCalories']} kcal',
-            progressColor: AppColors.primaryBlue,
-          ),
-          const SizedBox(height: 8),
-          ProgressCard(
-            title: 'Hidratación',
-            progress: 92.0,
-            subtitle: '${_healthMetrics!['waterIntake']} / 2.5 L',
-            progressColor: AppColors.primaryGreen,
-          ),
+            ),
+          ],
         ],
       ),
     );
@@ -460,126 +685,197 @@ class _HomeScreenState extends State<HomeScreen> {
       return const SizedBox(height: 100, child: Center(child: CircularProgressIndicator()));
     }
 
+    final hasRecommendations = _healthMetrics!['hasRecommendations'] ?? false;
+    final recommendations = _healthMetrics!['recommendations'] as List? ?? [];
+    final aiPredictedWeight = _healthMetrics!['aiPredictedWeight'];
+    final aiPredictedChange = _healthMetrics!['aiPredictedChange'];
+    final aiConfidence = _healthMetrics!['aiConfidence'];
+
     return InfoCard(
-      title: 'Predicciones IA',
+      title: hasRecommendations || aiPredictedWeight != null ? 'Predicciones IA' : 'IA No Disponible',
       icon: const Icon(Icons.psychology, color: AppColors.primaryBlue, size: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  AppColors.primaryBlue.withOpacity(0.1),
-                  AppColors.primaryGreen.withOpacity(0.1),
+          if (aiPredictedWeight != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.primaryBlue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: AppColors.primaryBlue.withOpacity(0.3),
+                  width: 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.trending_up,
+                        color: AppColors.primaryBlue,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Predicción de Peso (30 días)',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Peso estimado',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                          Text(
+                            '${aiPredictedWeight.toStringAsFixed(1)} kg',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (aiPredictedChange != null) ...[
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text(
+                              'Cambio esperado',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                            Text(
+                              '${aiPredictedChange >= 0 ? '+' : ''}${aiPredictedChange.toStringAsFixed(1)} kg',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: aiPredictedChange >= 0 ? AppColors.success : AppColors.warning,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (aiConfidence != null) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: aiConfidence == 'alta' 
+                            ? AppColors.success.withOpacity(0.2)
+                            : AppColors.warning.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        'Confianza: $aiConfidence',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: aiConfidence == 'alta' ? AppColors.success : AppColors.warning,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
-              borderRadius: BorderRadius.circular(8),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.insights,
-                      color: AppColors.primaryBlue,
-                      size: 16,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Análisis Predictivo',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.primaryBlue,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Basado en tu progreso actual, podrías alcanzar tu objetivo el ${_healthMetrics!['aiPredictedGoalDate']}',
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    const Text(
-                      'Confianza del modelo: ',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textLight,
-                      ),
-                    ),
-                    Text(
-                      '${_healthMetrics!['aiConfidenceScore']}%',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.success,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          // TODO: Aquí puedes agregar recomendaciones generadas por IA
-          // Ejemplo: AIRecommendationService.getPersonalizedTips(user)
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppColors.success.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: AppColors.success.withOpacity(0.3),
-                width: 1,
+            if (hasRecommendations) const SizedBox(height: 12),
+          ],
+          if (hasRecommendations) ...[
+            const Text(
+              'Recomendaciones Personalizadas',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
               ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.lightbulb,
-                      color: AppColors.success,
-                      size: 16,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Recomendación Personalizada',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.success,
+            const SizedBox(height: 8),
+            ...recommendations.take(3).map((rec) => Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceVariant,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.lightbulb_outline,
+                    color: AppColors.primaryGreen,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      rec['mensaje'] ?? rec.toString(),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
                       ),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Considerando tu progreso, te sugerimos aumentar la intensidad cardiovascular en un 15% esta semana.',
-                  style: TextStyle(
-                    fontSize: 13,
+                  ),
+                ],
+              ),
+            )).toList(),
+          ],
+          if (!hasRecommendations && aiPredictedWeight == null) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceVariant,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  Icon(
+                    Icons.psychology_outlined,
+                    size: 48,
                     color: AppColors.textSecondary,
                   ),
-                ),
-              ],
+                  const SizedBox(height: 8),
+                  const Text(
+                    'IA No Disponible',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Registra más datos para obtener predicciones y recomendaciones personalizadas',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textSecondary,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 16),
-          PrimaryButton(
-            text: 'Ver Estimación Completa',
-            onPressed: widget.onNavigateToEstimation,
-            icon: const Icon(Icons.arrow_forward, color: Colors.white, size: 16),
-          ),
+          ],
         ],
       ),
     );
